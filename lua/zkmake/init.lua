@@ -3,7 +3,6 @@ local M = {}
 M.config = {
   mapping = "<leader>zm",
   on_existing = "edit", -- "edit" | "warn" | "nothing"
-  zk_new_opts = {},
 }
 
 --- Strip any scheme:// prefix from a buffer name. Returns path or nil.
@@ -59,7 +58,6 @@ function M._parse_wikilink(text)
 end
 
 function M.make()
-  local zk_api = require("zk.api")
   local zk_util = require("zk.util")
 
   local buf_path = M._resolve_buf_path()
@@ -68,7 +66,8 @@ function M.make()
     return
   end
 
-  if not zk_util.notebook_root(buf_path) then
+  local notebook_root = zk_util.notebook_root(buf_path)
+  if not notebook_root then
     vim.notify("ZkMake: not inside a zk notebook", vim.log.levels.WARN)
     return
   end
@@ -81,42 +80,33 @@ function M.make()
 
   local title, heading = M._parse_wikilink(raw)
 
-  zk_api.list(buf_path, {
-    select = { "title", "absPath" },
-    hrefs = { title },
-  }, function(err, notes)
-    if err then
-      vim.notify("ZkMake: " .. tostring(err), vim.log.levels.ERROR)
-      return
-    end
+  -- Build the filepath: <notebook_root>/<title>.md
+  -- The filename matches the wikilink text so [[title]] resolves to title.md
+  local note_path = notebook_root .. "/" .. title .. ".md"
 
-    if notes and #notes > 0 then
-      if M.config.on_existing == "edit" then
-        vim.schedule(function()
-          vim.cmd("edit " .. vim.fn.fnameescape(notes[1].absPath))
-          if heading then vim.fn.search("^#\\+\\s\\+" .. vim.fn.escape(heading, "\\"), "w") end
-        end)
-      elseif M.config.on_existing == "warn" then
-        vim.notify("ZkMake: note already exists: " .. notes[1].absPath, vim.log.levels.INFO)
+  -- Check if the file already exists
+  if vim.fn.filereadable(note_path) == 1 then
+    if M.config.on_existing == "edit" then
+      vim.cmd("edit " .. vim.fn.fnameescape(note_path))
+      if heading then
+        vim.fn.search("^#\\+\\s\\+" .. vim.fn.escape(heading, "\\"), "w")
       end
-      return
+    elseif M.config.on_existing == "warn" then
+      vim.notify("ZkMake: note already exists: " .. note_path, vim.log.levels.INFO)
     end
+    return
+  end
 
-    local opts = vim.tbl_extend("force", { title = title, edit = true }, M.config.zk_new_opts)
-    zk_api.new(buf_path, opts, function(new_err, res)
-      if new_err then
-        vim.notify("ZkMake: " .. tostring(new_err), vim.log.levels.ERROR)
-        return
-      end
-      if res and res.path then
-        vim.schedule(function()
-          if not vim.api.nvim_buf_get_name(0):find(res.path, 1, true) then
-            vim.cmd("edit " .. vim.fn.fnameescape(res.path))
-          end
-        end)
-      end
-    end)
-  end)
+  -- Create the file with an H1 title
+  local fd = io.open(note_path, "w")
+  if not fd then
+    vim.notify("ZkMake: could not create " .. note_path, vim.log.levels.ERROR)
+    return
+  end
+  fd:write("# " .. title .. "\n")
+  fd:close()
+
+  vim.cmd("edit " .. vim.fn.fnameescape(note_path))
 end
 
 function M.setup(opts)
